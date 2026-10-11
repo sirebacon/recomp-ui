@@ -77,12 +77,31 @@ void draw_sections(RecompRuntimeUi *ui, const LauncherTheme &theme,
 
 void draw_items(RecompRuntimeUi *ui, const LauncherTheme &theme,
                 bool touch_friendly) {
-    const size_t count = recomp_runtime_ui_section_item_count(
-        ui, ui->section_index);
+    const size_t count = recomp_runtime_ui_page_entry_count(ui);
     for (size_t index = 0; index < count; ++index) {
-        const RecompRuntimeUiItem *item = recomp_runtime_ui_section_item(
-            ui, ui->section_index, index);
-        if (!item) continue;
+        char folder[96];
+        const RecompRuntimeUiItem *item = recomp_runtime_ui_page_entry(
+            ui, index, folder, sizeof(folder));
+        if (!item) {
+            /* Folder row: opens a nested page. */
+            if (!folder[0]) continue;
+            ImGui::PushID(static_cast<int>(index));
+            const bool selected = ui->in_section && index == ui->row_index;
+            char label[112];
+            std::snprintf(label, sizeof(label), "%s  >", folder);
+            if (ImGui::Selectable(label, selected, 0,
+                                  ImVec2(0.0f, theme.row_height))) {
+                ui->row_index = index;
+                ui->in_section = 1;
+                recomp_runtime_ui_enter_folder(ui, folder);
+            }
+            if (ImGui::IsItemHovered()) {
+                ui->row_index = index;
+                ui->in_section = 1;
+            }
+            ImGui::PopID();
+            continue;
+        }
 
         const bool enabled = recomp_runtime_ui_item_enabled(ui, item) != 0;
         const bool selected = ui->in_section && index == ui->row_index;
@@ -328,8 +347,14 @@ extern "C" void recomp_runtime_ui_render_imgui(RecompRuntimeUi *ui) {
             ImGui::EndChild();
             ImGui::SameLine();
             ImGui::BeginChild("##items", ImVec2(0.0f, content_h), true);
+            char page_title[256];
+            recomp_runtime_ui_page_title(ui, page_title, sizeof(page_title));
+            if (ui->page[0]) {
+                if (ImGui::SmallButton("< Back")) recomp_runtime_ui_leave_folder(ui);
+                ImGui::SameLine();
+            }
             ImGui::PushStyleColor(ImGuiCol_Text, col(theme.accent2));
-            ImGui::TextUnformatted(ui->sections[ui->section_index]);
+            ImGui::TextUnformatted(page_title);
             ImGui::PopStyleColor();
             ImGui::Separator();
             draw_items(ui, theme, touch_friendly);
@@ -337,10 +362,13 @@ extern "C" void recomp_runtime_ui_render_imgui(RecompRuntimeUi *ui) {
         } else {
             ImGui::BeginChild("##content", ImVec2(0.0f, content_h), true);
             if (ui->in_section) {
-                if (ImGui::SmallButton("< Back"))
+                if (ImGui::SmallButton("< Back") &&
+                    !recomp_runtime_ui_leave_folder(ui))
                     recomp_runtime_ui_leave_section(ui);
                 ImGui::SameLine();
-                ImGui::TextUnformatted(ui->sections[ui->section_index]);
+                char page_title[256];
+                recomp_runtime_ui_page_title(ui, page_title, sizeof(page_title));
+                ImGui::TextUnformatted(page_title);
                 ImGui::Separator();
                 draw_items(ui, theme, touch_friendly);
             } else {
