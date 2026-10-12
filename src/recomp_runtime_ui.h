@@ -19,6 +19,7 @@ extern "C" {
  */
 #define RECOMP_RUNTIME_UI_HAS_TEXT 1
 #define RECOMP_RUNTIME_UI_HAS_PRESENTATION_FLAGS 1
+#define RECOMP_RUNTIME_UI_HAS_GRID 1
 
 typedef struct RecompRuntimeUi RecompRuntimeUi;
 
@@ -38,7 +39,24 @@ typedef enum RecompRuntimeUiItemType {
      * recomp_runtime_ui_wants_text_input().
      */
     RECOMP_RUNTIME_UI_TEXT,
+    /*
+     * A block of tiles, e.g. a collection board. `step` is the column count
+     * and `maximum` + 1 the most tiles it can hold; the live tile count and
+     * each tile's label and look come from get_cell_count/get_cell. The value
+     * (get_value/set_value) is the cursor tile. While the row is selected the
+     * arrows move the cursor (up/down leave the grid at its top and bottom
+     * edges) and accept calls run_action on the cursor tile.
+     */
+    RECOMP_RUNTIME_UI_GRID,
 } RecompRuntimeUiItemType;
+
+/* Tile looks for RECOMP_RUNTIME_UI_GRID, OR-ed together. */
+enum {
+    RECOMP_RUNTIME_UI_CELL_DIM       = 1u << 0, /* greyed: known but not usable */
+    RECOMP_RUNTIME_UI_CELL_EMPTY     = 1u << 1, /* faint: not discovered yet */
+    RECOMP_RUNTIME_UI_CELL_HIGHLIGHT = 1u << 2, /* gold frame: special */
+    RECOMP_RUNTIME_UI_CELL_MARK      = 1u << 3, /* corner mark: e.g. in use */
+};
 
 typedef enum RecompRuntimeUiInput {
     RECOMP_RUNTIME_UI_INPUT_TOGGLE,
@@ -117,6 +135,16 @@ typedef struct RecompRuntimeUiCallbacks {
                     size_t buf_size);
     int (*set_text)(void *context, const RecompRuntimeUiItem *item,
                     const char *value);
+    /*
+     * RECOMP_RUNTIME_UI_GRID items only. get_cell_count returns how many tiles
+     * the grid shows now (at most maximum + 1). get_cell fills label and the
+     * RECOMP_RUNTIME_UI_CELL_* flags for tile `index` and returns non-zero;
+     * index -1 asks for a short header shown at the right of the grid's label
+     * row (e.g. "9/20"), and may return 0 for none.
+     */
+    int (*get_cell_count)(void *context, const RecompRuntimeUiItem *item);
+    int (*get_cell)(void *context, const RecompRuntimeUiItem *item, int index,
+                    char *label, size_t label_size, unsigned *flags);
 } RecompRuntimeUiCallbacks;
 
 typedef struct RecompRuntimeUiConfig {

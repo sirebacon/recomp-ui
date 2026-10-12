@@ -75,6 +75,85 @@ void draw_sections(RecompRuntimeUi *ui, const LauncherTheme &theme,
     }
 }
 
+/* A GRID row: its label and header, then the tiles. Clicking a tile moves the
+ * cursor there; double-clicking accepts it. */
+void draw_grid(RecompRuntimeUi *ui, const LauncherTheme &theme,
+               const RecompRuntimeUiItem *item, size_t index) {
+    const bool enabled = recomp_runtime_ui_item_enabled(ui, item) != 0;
+    const bool selected = ui->in_section && index == ui->row_index;
+    ImGui::PushID(static_cast<int>(index));
+    if (!enabled) ImGui::BeginDisabled();
+    char header[32];
+    recomp_runtime_ui_grid_cell(ui, item, -1, header, sizeof(header), nullptr);
+    ImGui::PushStyleColor(ImGuiCol_Text, col(selected ? theme.text : theme.text_muted));
+    ImGui::TextUnformatted(item->label ? item->label : "");
+    ImGui::PopStyleColor();
+    if (header[0]) {
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x -
+                             ImGui::CalcTextSize(header).x);
+        ImGui::TextDisabled("%s", header);
+    }
+    const int cells = recomp_runtime_ui_grid_cell_count(ui, item);
+    const int cols = recomp_runtime_ui_grid_columns(item);
+    int cursor = -1;
+    recomp_runtime_ui_current_value(ui, item, &cursor);
+    const float gap = theme.spacing_sm;
+    const float cell_w =
+        (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(cols - 1)) /
+        static_cast<float>(cols);
+    const float cell_h = theme.row_height;
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    for (int c = 0; c < cells; ++c) {
+        char label[32];
+        unsigned flags = 0;
+        recomp_runtime_ui_grid_cell(ui, item, c, label, sizeof(label), &flags);
+        if (c % cols) ImGui::SameLine(0.0f, gap);
+        ImGui::PushID(c);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 q(p.x + cell_w, p.y + cell_h);
+        const bool empty = (flags & RECOMP_RUNTIME_UI_CELL_EMPTY) != 0;
+        const bool dim = (flags & RECOMP_RUNTIME_UI_CELL_DIM) != 0;
+        draw->AddRectFilled(p, q, u32(empty ? theme.panel
+                                      : dim ? theme.panel_hovered
+                                            : theme.accent_dim),
+                            theme.radius_sm);
+        if (ImGui::InvisibleButton("##cell", ImVec2(cell_w, cell_h))) {
+            ui->row_index = index;
+            ui->in_section = 1;
+            if (ui->config.callbacks.set_value)
+                ui->config.callbacks.set_value(ui->config.callbacks.context, item, c);
+        }
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            ui->row_index = index;
+            ui->in_section = 1;
+            recomp_runtime_ui_adjust_current(ui, 1, 1, 0);
+        }
+        const ImU32 frame = (flags & RECOMP_RUNTIME_UI_CELL_HIGHLIGHT)
+                                ? IM_COL32(0xE0, 0xB8, 0x4A, 0xFF)
+                                : u32(theme.border);
+        draw->AddRect(p, q, frame, theme.radius_sm);
+        if (c == cursor)
+            draw->AddRect(ImVec2(p.x - 2.0f, p.y - 2.0f),
+                          ImVec2(q.x + 2.0f, q.y + 2.0f),
+                          u32(selected ? theme.text : theme.text_muted),
+                          theme.radius_sm, 0, selected ? 2.0f : 1.0f);
+        if (flags & RECOMP_RUNTIME_UI_CELL_MARK)
+            draw->AddRectFilled(ImVec2(q.x - 7.0f, p.y + 3.0f),
+                                ImVec2(q.x - 3.0f, p.y + 7.0f),
+                                IM_COL32(0x5D, 0xCA, 0xA5, 0xFF));
+        const ImVec2 ts = ImGui::CalcTextSize(label);
+        draw->PushClipRect(p, q, true);
+        draw->AddText(ImVec2(p.x + (cell_w - ts.x) * 0.5f, p.y + (cell_h - ts.y) * 0.5f),
+                      u32(empty || dim ? theme.text_muted : theme.text), label);
+        draw->PopClipRect();
+        ImGui::PopID();
+    }
+    if (!enabled) ImGui::EndDisabled();
+    ImGui::PopID();
+}
+
 void draw_items(RecompRuntimeUi *ui, const LauncherTheme &theme,
                 bool touch_friendly) {
     const size_t count = recomp_runtime_ui_page_entry_count(ui);
@@ -100,6 +179,11 @@ void draw_items(RecompRuntimeUi *ui, const LauncherTheme &theme,
                 ui->in_section = 1;
             }
             ImGui::PopID();
+            continue;
+        }
+
+        if (item->type == RECOMP_RUNTIME_UI_GRID) {
+            draw_grid(ui, theme, item, index);
             continue;
         }
 

@@ -38,6 +38,102 @@ static int run_action(void *context, const RecompRuntimeUiItem *item) {
     return 1;
 }
 
+/* A 3-column grid showing 7 of at most 10 tiles, between two plain rows. */
+typedef struct GridState {
+    int cursor;
+    int accepted;
+    int before;
+} GridState;
+
+static int grid_get(void *context, const RecompRuntimeUiItem *item, int *out) {
+    GridState *g = (GridState *)context;
+    if (!strcmp(item->key, "board")) *out = g->cursor;
+    else if (!strcmp(item->key, "before")) *out = g->before;
+    else return 0;
+    return 1;
+}
+static int grid_set(void *context, const RecompRuntimeUiItem *item, int value) {
+    GridState *g = (GridState *)context;
+    if (!strcmp(item->key, "board")) g->cursor = value;
+    else if (!strcmp(item->key, "before")) g->before = value;
+    else return 0;
+    return 1;
+}
+static int grid_run(void *context, const RecompRuntimeUiItem *item) {
+    if (strcmp(item->key, "board")) return 0;
+    ++((GridState *)context)->accepted;
+    return 1;
+}
+static int grid_count(void *context, const RecompRuntimeUiItem *item) {
+    (void)context; (void)item;
+    return 7;
+}
+static int grid_cell(void *context, const RecompRuntimeUiItem *item, int index,
+                     char *label, size_t size, unsigned *flags) {
+    (void)context; (void)item;
+    if (index < 0) { snprintf(label, size, "3/7"); return 1; }
+    snprintf(label, size, "T%d", index);
+    *flags = index == 2 ? RECOMP_RUNTIME_UI_CELL_HIGHLIGHT
+           : index > 4 ? RECOMP_RUNTIME_UI_CELL_EMPTY : 0;
+    return 1;
+}
+
+static void grid_tests(void) {
+    static const RecompRuntimeUiItem items[] = {
+        { "before", "Mods", "Before", NULL, RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, NULL, 0, NULL },
+        { "board", "Mods", "Board", "Tiles.", RECOMP_RUNTIME_UI_GRID, 0, 9, 3, NULL, 0, NULL },
+        { "after", "Mods", "After", NULL, RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, NULL, 0, NULL },
+    };
+    GridState g = { 0 };
+    RecompRuntimeUiConfig config = {0};
+    config.title = "Grid";
+    config.items = items;
+    config.item_count = sizeof(items) / sizeof(items[0]);
+    config.callbacks = (RecompRuntimeUiCallbacks){
+        &g, grid_get, grid_set, grid_run, NULL, NULL, NULL, NULL, NULL,
+        grid_count, grid_cell
+    };
+    config.theme = "psx";
+    RecompRuntimeUi *ui = recomp_runtime_ui_create(&config);
+    assert(ui != NULL);
+    recomp_runtime_ui_open(ui);
+    #define PRESS(input) assert(recomp_runtime_ui_handle_input(ui, input, 1, 0))
+    PRESS(RECOMP_RUNTIME_UI_INPUT_ACCEPT);        /* into "Mods", row Before */
+    PRESS(RECOMP_RUNTIME_UI_INPUT_DOWN);          /* onto the grid */
+    PRESS(RECOMP_RUNTIME_UI_INPUT_RIGHT);
+    assert(g.cursor == 1 && g.before == 0);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_DOWN);
+    assert(g.cursor == 4);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_DOWN);          /* short last row: last tile */
+    assert(g.cursor == 6);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_DOWN);          /* past the edge: next row */
+    assert(g.cursor == 6);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_ACCEPT);        /* "After" is not the grid */
+    assert(g.accepted == 0);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_UP);            /* back on the grid */
+    PRESS(RECOMP_RUNTIME_UI_INPUT_UP);
+    assert(g.cursor == 3);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_ACCEPT);
+    assert(g.accepted == 1);
+    for (int i = 0; i < 5; ++i) PRESS(RECOMP_RUNTIME_UI_INPUT_LEFT);
+    assert(g.cursor == 0);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_UP);            /* top edge: row Before */
+    PRESS(RECOMP_RUNTIME_UI_INPUT_ACCEPT);
+    assert(g.before == 1 && g.cursor == 0);
+    PRESS(RECOMP_RUNTIME_UI_INPUT_DOWN);
+    #undef PRESS
+
+    static uint32_t frame[640 * 480];
+    memset(frame, 0x7f, sizeof(frame));
+    recomp_runtime_ui_render_argb8888(ui, frame, 640, 480, 640 * 4);
+    /* Some tile pixel carries the gold highlight frame. */
+    int gold = 0;
+    for (size_t i = 0; i < sizeof(frame) / sizeof(frame[0]) && !gold; ++i)
+        gold = (frame[i] & 0xFFFFFFu) == 0xE0B84Au;
+    assert(gold);
+    recomp_runtime_ui_destroy(ui);
+}
+
 static void save(void *context) { ++((TestState *)context)->save_count; }
 static void visible(void *context, int open) {
     ((TestState *)context)->visible = open;
@@ -119,6 +215,7 @@ int main(void) {
         standard_ui, RECOMP_RUNTIME_UI_INPUT_RIGHT, 1, 0));
     assert(state.level == RECOMP_RUNTIME_UI_VIEW_ADAPTIVE);
     recomp_runtime_ui_destroy(standard_ui);
+    grid_tests();
     puts("runtime UI tests passed");
     return 0;
 }

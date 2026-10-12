@@ -266,6 +266,18 @@ void recomp_runtime_ui_adjust_current(RecompRuntimeUi *ui, int direction,
         return;
     }
     if (!recomp_runtime_ui_item_enabled(ui, item)) return;
+    if (item->type == RECOMP_RUNTIME_UI_GRID) {
+        /* Accept acts on the cursor tile; left/right move the cursor. */
+        if (!activate) {
+            recomp_runtime_ui_grid_move(ui, item, direction < 0 ? -1 : 1, 0);
+            return;
+        }
+        if (repeat || !ui->config.callbacks.run_action) return;
+        if (recomp_runtime_ui_grid_cell_count(ui, item) > 0 &&
+            ui->config.callbacks.run_action(ui->config.callbacks.context, item))
+            accepted_action(ui);
+        return;
+    }
     if (item->type == RECOMP_RUNTIME_UI_ACTION) {
         if (!activate || repeat || !ui->config.callbacks.run_action) return;
         if (ui->config.callbacks.run_action(ui->config.callbacks.context, item))
@@ -335,6 +347,67 @@ int recomp_runtime_ui_commit_text(RecompRuntimeUi *ui,
     return 1;
 }
 
+int recomp_runtime_ui_grid_columns(const RecompRuntimeUiItem *item) {
+    return item && item->step > 0 ? item->step : 1;
+}
+
+int recomp_runtime_ui_grid_cell_count(RecompRuntimeUi *ui,
+                                      const RecompRuntimeUiItem *item) {
+    if (!ui || !item || !ui->config.callbacks.get_cell_count) return 0;
+    int n = ui->config.callbacks.get_cell_count(ui->config.callbacks.context, item);
+    if (n < 0) n = 0;
+    if (n > item->maximum + 1) n = item->maximum + 1;
+    return n;
+}
+
+int recomp_runtime_ui_grid_cell(RecompRuntimeUi *ui,
+                                const RecompRuntimeUiItem *item, int index,
+                                char *label, size_t label_size,
+                                unsigned *flags) {
+    if (label && label_size) label[0] = '\0';
+    if (flags) *flags = 0;
+    if (!ui || !item || !label || !label_size || !ui->config.callbacks.get_cell)
+        return 0;
+    unsigned f = 0;
+    if (!ui->config.callbacks.get_cell(ui->config.callbacks.context, item, index,
+                                       label, label_size, &f)) {
+        label[0] = '\0';
+        return 0;
+    }
+    label[label_size - 1] = '\0';
+    if (flags) *flags = f;
+    return 1;
+}
+
+int recomp_runtime_ui_grid_move(RecompRuntimeUi *ui,
+                                const RecompRuntimeUiItem *item, int dx,
+                                int dy) {
+    const int count = recomp_runtime_ui_grid_cell_count(ui, item);
+    const int cols = recomp_runtime_ui_grid_columns(item);
+    int cursor = 0;
+    if (count <= 0) return dy == 0;
+    if (!recomp_runtime_ui_current_value(ui, item, &cursor)) cursor = 0;
+    if (cursor < 0 || cursor >= count) cursor = 0;
+    int next = cursor;
+    if (dy) {
+        next = cursor + dy * cols;
+        if (next < 0 || next >= count) {
+            /* Down from a short last row's neighbour still lands on the last
+             * tile; only a move past the grid's edge leaves it. */
+            const int row = cursor / cols, last_row = (count - 1) / cols;
+            if (dy > 0 && row < last_row) next = count - 1;
+            else return 0;
+        }
+    } else {
+        next = cursor + dx;
+        if (next < 0) next = 0;
+        if (next >= count) next = count - 1;
+    }
+    if (next != cursor && ui->config.callbacks.set_value)
+        ui->config.callbacks.set_value(ui->config.callbacks.context, item, next);
+    return 1;
+}
+
 int recomp_runtime_ui_wants_text_input(const RecompRuntimeUi *ui) {
     return (ui && ui->open && ui->editing_text) ? 1 : 0;
 }
@@ -384,6 +457,14 @@ int recomp_runtime_ui_handle_input(RecompRuntimeUi *ui,
     if (input == RECOMP_RUNTIME_UI_INPUT_UP ||
         input == RECOMP_RUNTIME_UI_INPUT_DOWN) {
         int delta = input == RECOMP_RUNTIME_UI_INPUT_UP ? -1 : 1;
+        if (ui->in_section) {
+            const RecompRuntimeUiItem *item =
+                recomp_runtime_ui_page_entry(ui, ui->row_index, NULL, 0);
+            if (item && item->type == RECOMP_RUNTIME_UI_GRID &&
+                recomp_runtime_ui_item_enabled(ui, item) &&
+                recomp_runtime_ui_grid_move(ui, item, 0, delta))
+                return 1;             /* moved inside the grid */
+        }
         size_t count = ui->in_section ? recomp_runtime_ui_page_entry_count(ui)
                                       : ui->section_count;
         size_t *selection = ui->in_section ? &ui->row_index : &ui->section_index;
@@ -569,6 +650,18 @@ static void item_value(RecompRuntimeUi *ui, const RecompRuntimeUiItem *item,
     }
 }
 
+/* Height of list row `index` on the open page (a section name on the top
+ * level is one line). */
+static int row_height(RecompRuntimeUi *ui, size_t index, int row_h, int cell_h,
+                      int cell_gap) {
+    if (!ui->in_section) return row_h;
+    const RecompRuntimeUiItem *item = recomp_runtime_ui_page_entry(ui, index, NULL, 0);
+    if (!item || item->type != RECOMP_RUNTIME_UI_GRID) return row_h;
+    const int cols = recomp_runtime_ui_grid_columns(item);
+    const int rows = (recomp_runtime_ui_grid_cell_count(ui, item) + cols - 1) / cols;
+    return row_h + rows * (cell_h + cell_gap) + cell_gap;
+}
+
 void recomp_runtime_ui_render_argb8888(RecompRuntimeUi *ui, void *pixels,
                                        int width, int height, int pitch) {
     if (!ui || !ui->open || !pixels || width <= 0 || height <= 0 ||
@@ -591,6 +684,11 @@ void recomp_runtime_ui_render_argb8888(RecompRuntimeUi *ui, void *pixels,
     const uint32_t selected = RGB8(theme.control_hovered);
     const uint32_t disabled = RGB8(theme.text_muted);
     const uint32_t border = RGB8(theme.border);
+    /* Grid tiles: usable ones in the accent, greyed and faint ones darker. */
+    const uint32_t tile = RGB8(theme.accent_dim);
+    const uint32_t tile_dim = RGB8(theme.panel_hovered);
+    const uint32_t tile_empty = panel;
+    const uint32_t gold = 0xE0B84Au, mark = 0x5DCAA5u;
 
     rect(pixels,width,height,pitch,0,0,width,height,0x000000,130);
     rect(pixels,width,height,pitch,panel_x,panel_y,panel_w,panel_h,panel,238);
@@ -627,16 +725,24 @@ void recomp_runtime_ui_render_argb8888(RecompRuntimeUi *ui, void *pixels,
     int list_y = panel_y + 32 * scale + header_extra;
     int footer_y = panel_y + panel_h - 28 * scale;
     int row_h = 15 * scale;
-    int visible = (footer_y - list_y) / row_h;
-    if (visible < 1) visible = 1;
+    const int cell_h = 18 * scale, cell_gap = 3 * scale;
     size_t count = ui->in_section ? recomp_runtime_ui_page_entry_count(ui)
                                   : ui->section_count;
     size_t selection = ui->in_section ? ui->row_index : ui->section_index;
-    size_t first = 0;
-    if (selection >= (size_t)visible) first = selection - (size_t)visible + 1;
-    for (int line = 0; line < visible && first + (size_t)line < count; ++line) {
-        size_t index = first + (size_t)line;
-        int y = list_y + line * row_h;
+    /* Rows are one line tall, except a grid: its label line plus its tiles.
+     * Scroll so the selected row fits, keeping as many rows above it as can. */
+    #define ROW_HEIGHT(index) row_height(ui, (index), row_h, cell_h, cell_gap)
+    const int avail = footer_y - list_y;
+    size_t first = selection < count ? selection : 0;
+    {
+        int used = count ? ROW_HEIGHT(first) : 0;
+        while (first > 0 && used + ROW_HEIGHT(first - 1) <= avail)
+            used += ROW_HEIGHT(--first);
+    }
+    int y = list_y;
+    for (size_t index = first; index < count; ++index) {
+        const int h = ROW_HEIGHT(index);
+        if (index != first && y + h > footer_y) break;
         if (index == selection)
             rect(pixels,width,height,pitch,panel_x+pad/2,y-3*scale,
                  panel_w-pad,row_h,selected,255);
@@ -644,6 +750,51 @@ void recomp_runtime_ui_render_argb8888(RecompRuntimeUi *ui, void *pixels,
         const RecompRuntimeUiItem *item = ui->in_section
             ? recomp_runtime_ui_page_entry(ui, index, folder, sizeof(folder))
             : NULL;
+        if (item && item->type == RECOMP_RUNTIME_UI_GRID) {
+            const int enabled = recomp_runtime_ui_item_enabled(ui, item);
+            const int sel = index == selection && enabled;
+            char header[32];
+            recomp_runtime_ui_grid_cell(ui, item, -1, header, sizeof(header), NULL);
+            const int header_w = text_width(header, scale);
+            draw_text(pixels,width,height,pitch,panel_x+pad,y,scale,
+                      sel ? white : muted,item->label,
+                      panel_x+panel_w-pad-header_w-8*scale);
+            draw_text(pixels,width,height,pitch,panel_x+panel_w-pad-header_w,y,
+                      scale,sel ? accent : muted,header,panel_x+panel_w-pad);
+            const int cells = recomp_runtime_ui_grid_cell_count(ui, item);
+            const int cols = recomp_runtime_ui_grid_columns(item);
+            int cursor = 0;
+            if (!recomp_runtime_ui_current_value(ui, item, &cursor)) cursor = -1;
+            const int grid_x = panel_x + pad, grid_w = panel_w - pad * 2;
+            const int cell_w = (grid_w - cell_gap * (cols - 1)) / cols;
+            for (int c = 0; c < cells; ++c) {
+                const int cx = grid_x + (c % cols) * (cell_w + cell_gap);
+                const int cy = y + row_h + (c / cols) * (cell_h + cell_gap);
+                char label[32];
+                unsigned flags = 0;
+                recomp_runtime_ui_grid_cell(ui, item, c, label, sizeof(label), &flags);
+                uint32_t fill = tile, text = white;
+                if (flags & RECOMP_RUNTIME_UI_CELL_EMPTY) { fill = tile_empty; text = disabled; }
+                else if (flags & RECOMP_RUNTIME_UI_CELL_DIM) { fill = tile_dim; text = muted; }
+                rect(pixels,width,height,pitch,cx,cy,cell_w,cell_h,fill,255);
+                outline(pixels,width,height,pitch,cx,cy,cell_w,cell_h,scale,
+                        (flags & RECOMP_RUNTIME_UI_CELL_HIGHLIGHT) ? gold : border);
+                if (flags & RECOMP_RUNTIME_UI_CELL_MARK)
+                    rect(pixels,width,height,pitch,cx+cell_w-5*scale,cy+2*scale,
+                         3*scale,3*scale,mark,255);
+                if (c == cursor) {
+                    const int t = sel ? 2 * scale : scale;
+                    outline(pixels,width,height,pitch,cx-t,cy-t,cell_w+2*t,
+                            cell_h+2*t,t,sel ? white : muted);
+                }
+                int label_w = text_width(label, scale);
+                if (label_w > cell_w - 4 * scale) label_w = cell_w - 4 * scale;
+                draw_text(pixels,width,height,pitch,cx+(cell_w-label_w)/2,
+                          cy+(cell_h-7*scale)/2,scale,text,label,cx+cell_w-2*scale);
+            }
+            y += h;
+            continue;
+        }
         if (!ui->in_section || !item) {
             /* Section on the top level, or a folder row inside a page. */
             const char *name = ui->in_section ? folder : ui->sections[index];
@@ -666,7 +817,9 @@ void recomp_runtime_ui_render_argb8888(RecompRuntimeUi *ui, void *pixels,
                       scale,index == selection && enabled ? accent : color,
                       value,panel_x+panel_w-pad);
         }
+        y += h;
     }
+    #undef ROW_HEIGHT
 
     const char *help = "UP/DOWN SELECT  LEFT/RIGHT CHANGE  ENTER ACCEPT";
     if (ui->in_section) {

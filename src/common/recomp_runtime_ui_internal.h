@@ -75,6 +75,20 @@ void recomp_runtime_ui_current_text(RecompRuntimeUi *ui,
 int recomp_runtime_ui_commit_text(RecompRuntimeUi *ui,
                                   const RecompRuntimeUiItem *item,
                                   const char *value);
+/* GRID items: column count (>= 1), live tile count, and one tile (index -1 =
+ * header). A tile that can't be read comes back as "" with no flags. */
+int recomp_runtime_ui_grid_columns(const RecompRuntimeUiItem *item);
+int recomp_runtime_ui_grid_cell_count(RecompRuntimeUi *ui,
+                                      const RecompRuntimeUiItem *item);
+int recomp_runtime_ui_grid_cell(RecompRuntimeUi *ui,
+                                const RecompRuntimeUiItem *item, int index,
+                                char *label, size_t label_size,
+                                unsigned *flags);
+/* Moves a GRID cursor by (dx, dy) tiles. Returns 0 when the move would leave
+ * the grid vertically, so the caller can move to the next row instead. */
+int recomp_runtime_ui_grid_move(RecompRuntimeUi *ui,
+                                const RecompRuntimeUiItem *item, int dx,
+                                int dy);
 
 #ifdef __cplusplus
 }
